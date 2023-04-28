@@ -141,7 +141,7 @@ module.exports = NodeHelper.create({
       this.debug(`Connecting to ${this.config.broker}:${this.config.port}`);
       this._client = mqtt.connect({
         clientId:
-          `scenarioMonitor_${this.instance}_` +
+          `scenarioMonitor_` +
           Math.random()
             .toString(16)
             .replace(/[^\d]+/gim, ""),
