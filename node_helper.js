@@ -142,7 +142,9 @@ module.exports = NodeHelper.create({
       this._client = mqtt.connect({
         clientId:
           `scenarioMonitor_${this.instance}_` +
-          Math.random().toString(16).substr(2, 8),
+          Math.random()
+            .toString(16)
+            .replace(/[^\d]+/gim, ""),
         keepalive: 60,
         host: this.config.broker,
         port: this.config.port,
