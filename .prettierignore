@@ -1,0 +1,9 @@
+**/.vscode
+**/.github
+**/.git
+**/.svn
+**/.hg
+**/node_modules
+**/*prettier*
+**/package.json
+**/package-lock.json

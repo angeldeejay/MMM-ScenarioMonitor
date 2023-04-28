@@ -1,0 +1,21 @@
+{
+  "name": "mmm-scenariomonitor",
+  "version": "1.0.0",
+  "description": "Scenario monitor",
+  "main": "MMM-ScenarioMonitor.js",
+  "scripts": {
+    "lint": "prettier --check .",
+    "lint:fix": "prettier --write .",
+    "test": "npm run lint"
+  },
+  "author": "Andrés Vanegas <ukab72106@gmail.com>",
+  "license": "MIT",
+  "devDependencies": {
+    "prettier": "^2.8.8"
+  },
+  "dependencies": {
+    "mqtt": "^4.3.7",
+    "path": "^0.12.7",
+    "ping": "^0.4.4"
+  }
+}
