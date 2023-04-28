@@ -1,5 +1,5 @@
 {
-  "name": "mmm-scenariomonitor",
+  "name": "MMM-ScenarioMonitor",
   "version": "1.0.0",
   "description": "Scenario monitor",
   "main": "MMM-ScenarioMonitor.js",
@@ -7,6 +7,10 @@
     "lint": "prettier --check .",
     "lint:fix": "prettier --write .",
     "test": "npm run lint"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/angeldeejay/MMM-ScenarioMonitor.git"
   },
   "author": "Andrés Vanegas <ukab72106@gmail.com>",
   "license": "MIT",

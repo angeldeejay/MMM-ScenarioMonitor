@@ -1,125 +1,164 @@
-const NodeHelper = require("node_helper");
-const ping = require("ping");
-const mqtt = require("mqtt");
 const Log = require("logger");
+const mqtt = require("mqtt");
+const NodeHelper = require("node_helper");
 const path = require("path");
+const ping = require("ping");
+const MODULE_NAME = path.basename(__dirname);
 
-module.exports = NodeHelper.create(path.basename(__dirname), {
-  name: path.basename(__dirname),
-  logPrefix: `${path.basename(__dirname)} ::`,
-  messagePrefix: `${path.basename(__dirname)}-`,
+module.exports = NodeHelper.create({
+  name: MODULE_NAME,
+  logPrefix: `${MODULE_NAME} ::`,
+  messagePrefix: `${MODULE_NAME}-`,
   defaults: {
+    port: 1883,
     pingTarget: null,
     broker: null,
     waitTime: 60,
-    monitorTopic: "state/monitor/STATE",
-    ledsTopic: "wled/all/api",
+    ledsTopic: null,
+    scenarioTopic: null,
     scenarioTopic: null,
     targetTopics: []
   },
-  states: {
+  _states: {
     on: "ON",
     off: "OFF",
     idle: "IDLE"
   },
-  config: {},
-  lastSeen: null,
-  client: null,
-  notifiedOn: false,
-  notifiedOff: false,
-  notifiedIdle: false,
-  connected: false,
+  _lastSeen: null,
+  _client: null,
+  _connected: false,
+  _state: null,
+  _ready: false,
 
-  start: function () {
+  start() {
+    this.log("Starting");
     this.config = {
       ...this.defaults,
       ...this.config
     };
-    this.client = null;
-    this.lastSeen = this._now();
-    this.state = this.states.off;
-    this.connected = false;
+    this._client = null;
+    this._lastSeen = this._now();
+    this._state = this._states.off;
+    this._connected = false;
     this.connectToBroker();
+    setInterval(() => this._sendNotification("READY", this._ready), 1000);
     this.log("Started");
   },
 
   // Logging wrapper
-  log: function (...args) {
+  log(...args) {
     Log.log(this.logPrefix, ...args);
   },
-  info: function (...args) {
+  info(...args) {
     Log.info(this.logPrefix, ...args);
   },
-  debug: function (...args) {
+  debug(...args) {
     Log.debug(this.logPrefix, ...args);
   },
-  error: function (...args) {
+  error(...args) {
     Log.error(this.logPrefix, ...args);
   },
-  warning: function (...args) {
-    Log.warning(this.logPrefix, ...args);
+  warning(...args) {
+    Log.warn(this.logPrefix, ...args);
   },
 
   _now() {
     return Math.floor(Date.now() / 1000);
   },
-
-  checkConfig: function (...args) {
-    return args.reduce(
-      (acc, o) =>
-        Object.prototype.hasOwnProperty.call(this.config, o) &&
-        this.config[o] !== null &&
-        acc,
-      true
-    );
+  vString(s) {
+    return typeof s === "string" && s !== null && s.trim().length > 0;
+  },
+  vArray(a) {
+    return Array.isArray(a) && a !== null && a.length > 0;
+  },
+  vInt(i) {
+    return !isNaN(parseInt(i));
   },
 
-  connectToBroker: function () {
-    if (!this.checkConfig("broker")) {
-      setTimeout(() => this.connectToBroker(), 500);
+  checkConfig(...args) {
+    return Object.entries(this.config)
+      .filter(([k, _]) => (args.length === 0 ? true : args.includes(k)))
+      .reduce((acc, [key, value]) => {
+        let valid = true;
+        switch (key) {
+          case "targetTopics":
+            valid =
+              valid &&
+              this.vArray(value) &&
+              value.reduce((a, b) => this.vString(b) && a, true);
+            break;
+          case "port":
+          case "waitTime":
+            valid = valid && this.vInt(value);
+            break;
+          case "broker":
+          case "ledsTopic":
+          case "monitorTopic":
+          case "pingTarget":
+          case "scenarioTopic":
+            valid = valid && this.vString(value);
+            break;
+        }
+        return valid && acc;
+      }, true);
+  },
+
+  connectToBroker() {
+    if (!this.checkConfig("broker", "port")) {
+      this.debug("No broker/port in config. Skipping connection");
+      setTimeout(() => {
+        this.connectToBroker();
+      }, 1000);
       return;
     }
 
-    this.client = mqtt.connect(this.config.broker);
+    this.debug(`Connecting to ${this.config.broker}:${this.config.port}`);
+    this._client = mqtt.connect({
+      host: this.config.broker,
+      port: this.config.port,
+      protocol: "tcp"
+    });
 
-    this.client.on("connect", () => {
-      this.connected = true;
+    this._client.on("connect", () => {
+      this._connected = true;
       this.log("Connected to MQTT broker");
       this.monitorLoop();
     });
 
-    this.client.on("error", (error) => {
+    this._client.on("error", (error) => {
       this.error("MQTT Error", error.toString());
-      this.client.close();
+      this._client.end(true);
     });
 
-    this.client.on("close", () => {
-      this.connected = false;
+    this._client.on("close", () => {
+      this._connected = false;
       this.warning("MQTT connection closed. Reconnecting...");
-      setTimeout(() => this.connectToBroker(), 500);
+      this._client = null;
+      setTimeout(() => {
+        this.connectToBroker();
+      }, 1000);
     });
   },
 
-  monitorLoop: function () {
-    if (!this.checkConfig("pingTarget", "monitorTopic")) {
-      setInterval(() => this.monitorLoop(), 500);
-      return;
-    }
+  monitorLoop() {
+    if (!this._connected) return;
 
-    this.publishMessage(this.config.monitorTopic, this.states.on);
-
+    this.publishMessage(this.config.monitorTopic, this._states.on);
     ping.promise
       .probe(this.config.pingTarget, { min_reply: 1, timeout: 1 })
       .then((res) => {
-        const lastState = `${this.state}`;
-        const counter = this._now() - this.lastSeen;
+        const lastState = `${this._state}`;
+        const counter = this._now() - this._lastSeen;
         if (res.alive) {
-          this.lastSeen = this._now();
-          this.state = this.state.on;
-        } else if (counter < this.config.waitTime) this.state = this.state.idle;
-        else if (counter >= this.config.waitTime) this.state = this.state.off;
+          this._lastSeen = this._now();
+          this._state = this._states.on;
+        } else if (counter < this.config.waitTime)
+          this._state = this._states.idle;
+        else if (counter >= this.config.waitTime)
+          this._state = this._states.off;
 
-        if (this.state !== lastState) this.log(`Detected ${this.state}`);
+        if (this._state !== lastState) this.log(`Detected ${this._state}`);
+        else this.debug(`Detected ${this._state}`);
         [
           this.config.ledsTopic,
           this.config.scenarioTopic,
@@ -129,28 +168,26 @@ module.exports = NodeHelper.create(path.basename(__dirname), {
           .forEach((t) => {
             switch (t) {
               case this.config.ledsTopic:
-                if (this.state === this.states.off)
+                if (this._state === this._states.off)
                   this.publishMessage(t, "PL=1");
                 break;
               case this.config.scenarioTopic:
-                this.publishMessage(t, this.state);
+                this.publishMessage(t, this._state);
                 break;
               default:
-                if ([this.states.on, this.states.off].includes(this.state))
-                  this.publishMessage(t, this.state);
+                if ([this._states.on, this._states.off].includes(this._state))
+                  this.publishMessage(t, this._state);
             }
           });
       })
       .catch(() => void 0)
-      .finally(() => {
-        this._sendNotification("STATE", this.state);
-        setInterval(() => this.monitorLoop(), 1000);
-      });
+      .finally(() => setTimeout(() => this.monitorLoop(), 1000));
   },
 
-  publishMessage: function (topic, message) {
-    if (!this.client) return;
-    this.client.publish(topic, message, (error) => {
+  publishMessage(topic, message) {
+    if (!this._client) return;
+    this.debug(`Publishing to ${topic}: ${message}`);
+    this._client.publish(topic, message, (error) => {
       if (error) {
         this.error("Error publishing MQTT message", error.toString());
       }
@@ -164,30 +201,71 @@ module.exports = NodeHelper.create(path.basename(__dirname), {
     );
   },
 
-  _notificationReceived(notification, payload) {
+  __notificationReceivedHandler(notification, payload) {
     switch (notification) {
       case "SET_CONFIG":
         try {
           let changed = false;
           Object.entries({
-            ...this.defaults,
             ...this.config,
             ...payload
-          }).forEach(([k, v]) => {
-            if (this.config[k] === v) return;
-            this.config[k] == v;
-            changed = true;
+          }).forEach(([key, value]) => {
+            switch (key) {
+              case "targetTopics":
+                if (
+                  this.vArray(value) &&
+                  (payload[key].filter((t) => !this.config[key].includes(t))
+                    .length > 0 ||
+                    this.config[key].filter((t) => !payload[key].includes(t))
+                      .length > 0)
+                ) {
+                  this.config.targetTopics = value;
+                  changed = true;
+                }
+                break;
+              case "port":
+              case "waitTime":
+                const parsed = parseInt(value, 10);
+                if (this.vInt(value) && parsed !== this.config[key]) {
+                  this.config[key] = parsed;
+                  changed = true;
+                }
+                break;
+              case "broker":
+              case "ledsTopic":
+              case "monitorTopic":
+              case "pingTarget":
+              case "scenarioTopic":
+                if (this.vString(value) && value !== this.config[key]) {
+                  this.config[key] = value;
+                  changed = true;
+                }
+                break;
+            }
           });
-          if (changed) this.log("Config settled");
-        } catch (_) {
-          this.error("Invalid config", JSON.stringify(payload, null, 2));
+
+          const validConfig = this.checkConfig();
+          if (!validConfig)
+            throw new Error(`Invalid config ${JSON.stringify(payload)}`);
+          if (changed) {
+            this.info("Initialized");
+            this.debug("with config: " + JSON.stringify(this.config, null, 2));
+          }
+          this._ready = true;
+        } catch (err) {
+          this._ready = false;
+          this.config = {
+            ...this.defaults
+          };
+          this.error(err);
+          this._sendNotification("READY", this._ready);
         }
       default:
     }
   },
 
-  socketNotificationReceived: function (notification, payload) {
-    this._notificationReceived(
+  socketNotificationReceived(notification, payload) {
+    this.__notificationReceivedHandler(
       notification.replace(new RegExp(`^${this.messagePrefix}`, "gi"), ""),
       payload
     );
