@@ -2,6 +2,7 @@ const Log = require("logger");
 const mqtt = require("mqtt");
 const NodeHelper = require("node_helper");
 const path = require("path");
+const fs = require("fs");
 const ping = require("ping");
 const { clearTimeout } = require("timers");
 const MODULE_NAME = path.basename(__dirname);
@@ -138,39 +139,43 @@ module.exports = NodeHelper.create({
     try {
       this._shouldReconnect = true;
       this.debug(`Connecting to ${this.config.broker}:${this.config.port}`);
-      this._client = mqtt
-        .connect({
-          clientId:
-            "scenarioMonitor_" + Math.random().toString(16).substr(2, 8),
-          keepalive: 60,
-          host: this.config.broker,
-          port: this.config.port,
-          protocol: "tcp"
-        })
-        .on("connect", () => {
-          this._connected = true;
-          this.log("Connected to MQTT broker");
-        })
-        .on("error", (error) => {
-          this._connected = false;
-          this.error("MQTT Error", error.toString());
-          this._client.end(true);
-        })
-        .on("reconnect", () => {
-          this._connected = false;
-          this.log("Reconnecting to MQTT broker");
-        })
-        .on("offline", () => {
-          this._connected = false;
-          this._client.end(true);
-          this.warning("MQTT broker is offline");
-        })
-        .on("end", () => (this._connected = false))
-        .on("close", () => {
-          this._connected = false;
-          this.warning("MQTT connection closed. Reconnecting...");
-          if (this._shouldReconnect) this._client.reconnect();
-        });
+      this._client = mqtt.connect({
+        clientId:
+          `scenarioMonitor_${this.instance}_` +
+          Math.random().toString(16).substr(2, 8),
+        keepalive: 60,
+        host: this.config.broker,
+        port: this.config.port,
+        protocol: "tcp",
+        reconnectPeriod: 0,
+        connectTimeout: 5 * 1000
+      });
+      this._client.on("connect", () => {
+        this._connected = true;
+        this.log("Connected to MQTT broker");
+      });
+      this._client.on("error", (error) => {
+        this._connected = false;
+        this._client.end(true);
+      });
+      this._client.on("reconnect", () => {
+        this._connected = false;
+        this.debug("Reconnecting to MQTT broker");
+      });
+      this._client.on("offline", () => {
+        this._connected = false;
+        this._client.end(true);
+        this.warning("MQTT broker is offline");
+      });
+      this._client.on("end", () => {
+        this._connected = false;
+      });
+      this._client.on("close", () => {
+        this.warning("MQTT connection closed");
+        this._shouldConnectBroker = reconnectOnFail;
+        this._shouldReconnect = false;
+        this._timer = setTimeout(() => this.connectToBroker(), 1000);
+      });
     } catch (_) {
       this._shouldConnectBroker = reconnectOnFail;
       this._shouldReconnect = false;
@@ -179,7 +184,10 @@ module.exports = NodeHelper.create({
   },
 
   monitorLoop() {
-    if (!this._connected) return;
+    if (!this._connected) {
+      setTimeout(() => this.monitorLoop(), 1000);
+      return;
+    }
 
     this.publishMessage(this.config.monitorTopic, this._states.on);
     ping.promise
@@ -223,7 +231,7 @@ module.exports = NodeHelper.create({
   },
 
   publishMessage(topic, message) {
-    if (!this.connected) return;
+    if (!this._connected) return;
     this.debug(`Publishing to ${topic}: ${message}`);
     this._client.publish(topic, message, (error) => {
       if (error) {

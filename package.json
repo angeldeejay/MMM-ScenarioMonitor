@@ -1,6 +1,6 @@
 {
   "name": "MMM-ScenarioMonitor",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "description": "Scenario monitor",
   "main": "MMM-ScenarioMonitor.js",
   "scripts": {
