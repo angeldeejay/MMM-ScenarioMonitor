@@ -3,6 +3,7 @@ const mqtt = require("mqtt");
 const NodeHelper = require("node_helper");
 const path = require("path");
 const ping = require("ping");
+const { clearTimeout } = require("timers");
 const MODULE_NAME = path.basename(__dirname);
 
 module.exports = NodeHelper.create({
@@ -27,21 +28,30 @@ module.exports = NodeHelper.create({
   _lastSeen: null,
   _client: null,
   _connected: false,
+  _shouldReconnect: false,
+  _shouldConnectBroker: false,
   _state: null,
-  _ready: false,
+  _timer: null,
+  _defaultConfig: null,
 
   start() {
     this.log("Starting");
+    this._defaultConfig = this.config;
     this.config = {
       ...this.defaults,
-      ...this.config
+      ...this._defaultConfig
     };
     this._client = null;
-    this._lastSeen = this._now();
+    this._timer = null;
+    this._lastSeen = 0;
     this._state = this._states.off;
     this._connected = false;
-    this.connectToBroker();
-    setInterval(() => this._sendNotification("READY", this._ready), 1000);
+    this._shouldConnectBroker = false;
+    this._shouldReconnect = false;
+
+    if (this.checkConfig()) this.connectToBroker();
+    this.monitorLoop();
+    this.notifyReady();
     this.log("Started");
   },
 
@@ -75,6 +85,11 @@ module.exports = NodeHelper.create({
     return !isNaN(parseInt(i));
   },
 
+  notifyReady() {
+    this._sendNotification("READY", this.checkConfig());
+    setTimeout(() => this.notifyReady(), 1000);
+  },
+
   checkConfig(...args) {
     return Object.entries(this.config)
       .filter(([k, _]) => (args.length === 0 ? true : args.includes(k)))
@@ -104,40 +119,63 @@ module.exports = NodeHelper.create({
   },
 
   connectToBroker() {
-    if (!this.checkConfig("broker", "port")) {
-      this.debug("No broker/port in config. Skipping connection");
-      setTimeout(() => {
-        this.connectToBroker();
-      }, 1000);
-      return;
+    if (this._timer !== null) {
+      clearTimeout(this._timer);
+      this._timer = null;
+    }
+    const reconnectOnFail = this._shouldConnectBroker;
+    this._shouldConnectBroker = false;
+    this._shouldReconnect = false;
+
+    if (this.client !== null) {
+      try {
+        this.client.end();
+      } catch (_) {}
+      delete this.client;
+      this.client = null;
     }
 
-    this.debug(`Connecting to ${this.config.broker}:${this.config.port}`);
-    this._client = mqtt.connect({
-      host: this.config.broker,
-      port: this.config.port,
-      protocol: "tcp"
-    });
-
-    this._client.on("connect", () => {
-      this._connected = true;
-      this.log("Connected to MQTT broker");
-      this.monitorLoop();
-    });
-
-    this._client.on("error", (error) => {
-      this.error("MQTT Error", error.toString());
-      this._client.end(true);
-    });
-
-    this._client.on("close", () => {
-      this._connected = false;
-      this.warning("MQTT connection closed. Reconnecting...");
-      this._client = null;
-      setTimeout(() => {
-        this.connectToBroker();
-      }, 1000);
-    });
+    try {
+      this._shouldReconnect = true;
+      this.debug(`Connecting to ${this.config.broker}:${this.config.port}`);
+      this._client = mqtt
+        .connect({
+          clientId:
+            "scenarioMonitor_" + Math.random().toString(16).substr(2, 8),
+          keepalive: 60,
+          host: this.config.broker,
+          port: this.config.port,
+          protocol: "tcp"
+        })
+        .on("connect", () => {
+          this._connected = true;
+          this.log("Connected to MQTT broker");
+        })
+        .on("error", (error) => {
+          this._connected = false;
+          this.error("MQTT Error", error.toString());
+          this._client.end(true);
+        })
+        .on("reconnect", () => {
+          this._connected = false;
+          this.log("Reconnecting to MQTT broker");
+        })
+        .on("offline", () => {
+          this._connected = false;
+          this._client.end(true);
+          this.warning("MQTT broker is offline");
+        })
+        .on("end", () => (this._connected = false))
+        .on("close", () => {
+          this._connected = false;
+          this.warning("MQTT connection closed. Reconnecting...");
+          if (this._shouldReconnect) this._client.reconnect();
+        });
+    } catch (_) {
+      this._shouldConnectBroker = reconnectOnFail;
+      this._shouldReconnect = false;
+      this._timer = setTimeout(() => this.connectToBroker(), 1000);
+    }
   },
 
   monitorLoop() {
@@ -185,7 +223,7 @@ module.exports = NodeHelper.create({
   },
 
   publishMessage(topic, message) {
-    if (!this._client) return;
+    if (!this.connected) return;
     this.debug(`Publishing to ${topic}: ${message}`);
     this._client.publish(topic, message, (error) => {
       if (error) {
@@ -250,15 +288,15 @@ module.exports = NodeHelper.create({
           if (changed) {
             this.info("Initialized");
             this.debug("with config: " + JSON.stringify(this.config, null, 2));
+            this._shouldConnectBroker = true;
+            this.connectToBroker();
           }
-          this._ready = true;
         } catch (err) {
-          this._ready = false;
           this.config = {
-            ...this.defaults
+            ...this.defaults,
+            ...this._defaultConfig
           };
           this.error(err);
-          this._sendNotification("READY", this._ready);
         }
       default:
     }
