@@ -186,14 +186,18 @@ module.exports = NodeHelper.create({
   },
 
   monitorLoop() {
-    if (!this._connected) {
-      setTimeout(() => this.monitorLoop(), 1000);
-      return;
+    if (this.checkConfig("monitorTopic")) {
+      this.publishMessage(this.config.monitorTopic, this._states.on);
     }
 
-    this.publishMessage(this.config.monitorTopic, this._states.on);
-    ping.promise
-      .probe(this.config.pingTarget, { min_reply: 1, timeout: 1 })
+    const pingPromise = this.checkConfig("pingTarget")
+      ? ping.promise.probe(this.config.pingTarget, {
+          min_reply: 1,
+          timeout: 1
+        })
+      : Promise.reject();
+
+    pingPromise
       .then((res) => {
         const lastState = `${this._state}`;
         const counter = this._now() - this._lastSeen;
@@ -229,7 +233,11 @@ module.exports = NodeHelper.create({
           });
       })
       .catch(() => void 0)
-      .finally(() => setTimeout(() => this.monitorLoop(), 1000));
+      .finally(() =>
+        setTimeout(() => {
+          this.monitorLoop();
+        }, 1000)
+      );
   },
 
   publishMessage(topic, message) {
